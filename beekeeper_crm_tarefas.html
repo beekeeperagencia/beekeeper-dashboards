@@ -2566,6 +2566,7 @@ document.querySelectorAll(".modal-overlay").forEach(el=>el.addEventListener("cli
 // ── SAVE ──
 function saveData(){
   try{
+    S._savedAt = Date.now();
     localStorage.setItem(SK,JSON.stringify(S));
     const now=new Date().toLocaleString("pt-BR");
     document.getElementById("saveInd").textContent="✓ "+now;
@@ -2577,6 +2578,7 @@ function saveData(){
 }
 function autoSave(){
   try{
+    S._savedAt = Date.now();
     localStorage.setItem(SK,JSON.stringify(S));
     document.getElementById("saveInd").textContent="● "+new Date().toLocaleTimeString("pt-BR");
   }catch(e){}
@@ -2586,12 +2588,14 @@ function loadData(){
   return false;
 }
 function exportHTML(){
-  // Primeiro salva o estado atual no localStorage para garantir que tudo está sincronizado
+  // Marca o timestamp de exportação no S para que o init saiba quando esse arquivo foi gerado
+  S._savedAt = Date.now();
   try{ localStorage.setItem(SK, JSON.stringify(S)); }catch(e){}
 
   let h=document.documentElement.outerHTML;
-  // Remove TODOS os scripts __SK__ já embutidos (evita acúmulo de duplicatas)
-  h=h.replace(/<script>window\.__SK__=[\s\S]*?<\/script>/g,"");
+  // Remove APENAS o script __SK__ embutido (linha única, no head).
+  // Usa regex preciso para não apagar o script principal da aplicação.
+  h=h.replace(/<script>window\.__SK__=\{[^<]*\};<\/script>/g,"");
   // Injeta o estado ATUAL (S) como __SK__ no head
   const inj="<script>window.__SK__="+JSON.stringify(S)+";<\/script>";
   h=h.replace("</head>",inj+"</head>");
@@ -2659,17 +2663,30 @@ function render(){
 }
 
 // ── INIT ──
-// Prioridade: __SK__ embutido (snapshot exato do momento da exportação) > localStorage > DEFAULT
-// Razão: quando você clica em Exportar, o __SK__ captura o estado ATUAL do S em memória.
-// Esse é sempre o dado mais recente e confiável. O localStorage pode ser de outro domínio
-// (file:// vs github.io) ou de outra sessão, ficando desatualizado.
-if(window.__SK__){
-  S = window.__SK__;
-  // Sincroniza o localStorage com o __SK__ para que edições futuras persistam
+// Estratégia: compara o timestamp de quem é mais recente — __SK__ ou localStorage.
+// O exportHTML injeta savedAt no __SK__. O autoSave grava savedAt no localStorage.
+// Quem tiver o savedAt mais recente ganha. Se não houver timestamp, __SK__ ganha
+// (primeira vez abrindo o arquivo exportado).
+(function(){
+  let skData = null, lsData = null;
+  try{ if(window.__SK__) skData = window.__SK__; }catch(e){}
+  try{
+    const raw = localStorage.getItem(SK);
+    if(raw){ const p=JSON.parse(raw); if(p&&p.clientes) lsData=p; }
+  }catch(e){}
+
+  if(skData && lsData){
+    const skTime = skData._savedAt || 0;
+    const lsTime = lsData._savedAt || 0;
+    S = skTime >= lsTime ? skData : lsData;
+  } else if(skData){
+    S = skData;
+  } else if(lsData){
+    S = lsData;
+  }
+  // Sincroniza localStorage com o que foi carregado
   try{ localStorage.setItem(SK, JSON.stringify(S)); }catch(e){}
-} else {
-  loadData();
-}
+})();
 if(!S.status)S.status={};
 if(!S.notas)S.notas={};
 if(!S.qtdMes)S.qtdMes={};
