@@ -157,6 +157,7 @@ body{display:flex;flex-direction:column;overflow:hidden;}
   </div>
   <div class="topbar-right">
     <button class="btn btn-ghost" onclick="openAddLead()">+ Lead</button>
+    <button class="btn btn-ghost" id="btnRaioX" onclick="importarRaioX()" title="Importar leads captados pelo Raio-X do GMN">⬇ Raio-X</button>
     <button class="btn btn-ghost" onclick="exportHTML()">↓ Exportar</button>
     <button class="btn btn-primary" id="btnSave" onclick="saveData()">💾 Salvar</button>
   </div>
@@ -195,6 +196,7 @@ body{display:flex;flex-direction:column;overflow:hidden;}
         <select class="form-input" id="lOrigem">
           <option>Site</option>
           <option>Google</option>
+          <option>Raio-X</option>
           <option>Instagram</option>
           <option>Ligação</option>
           <option>Indicação</option>
@@ -333,6 +335,8 @@ const TEMPLATES = [
     texto:"Olá! Vi o perfil de vocês no Instagram e notei que [observação específica — ex: poucos posts recentes, sem destaque, fotos com qualidade baixa]. Trabalho com marketing digital local aqui em Goiânia e ajudo negócios como o seu a aparecerem mais no Google e nas redes. Posso te mostrar rapidinho o que encontrei?" },
   { origem:"Google", titulo:"Primeiro contato — GMN abandonado",
     texto:"Olá! Encontrei o perfil de vocês no Google e percebi que o cadastro está incompleto (sem fotos atualizadas / sem horário / sem categoria certa). Isso faz o negócio perder clientes que pesquisam vocês todos os dias. Posso te mostrar o que precisa ajustar?" },
+  { origem:"Raio-X", titulo:"Primeiro contato — fez o Raio-X",
+    texto:"Olá, [nome]! Aqui é o Jonas, da Beekeeper. Vi que você fez o Raio-X do perfil da [empresa] no Google e a nota ficou em [nota]/100. Olhei o resultado e o que mais está pesando é [principal problema]. Dá para resolver isso rápido. Posso te mostrar em 10 minutos como a gente faria?" },
   { origem:"Ligação", titulo:"Roteiro de ligação fria",
     texto:"Boa tarde, falo com [nome]? Me chamo Jonas, sou da Beekeeper, uma agência de marketing aqui de Goiânia. Estou ligando porque ajudamos negócios como o seu a aparecerem mais no Google e nas redes sociais, e queria entender rapidinho como está a presença digital de vocês hoje. Tem 2 minutos?" },
   { origem:"Indicação", titulo:"Contato via indicação",
@@ -992,6 +996,96 @@ function loadData(){
   }catch(e){}
   return false;
 }
+// ── IMPORTAÇÃO DE LEADS DO RAIO-X ──
+// Os leads do Raio-X caem numa planilha do Google (via Apps Script). Aqui o CRM
+// lê essa planilha e cria os cartões em "Captação". O endereço da planilha fica
+// só neste navegador, fora dos dados exportados.
+const RX_URL_KEY = "beekeeper_raiox_url";
+
+// Os dados vêm de um formulário público: remove o que poderia virar HTML.
+function rxLimpo(v, max){
+  return String(v==null?"":v).replace(/[<>"`]/g,"").replace(/'/g,"’").replace(/\s+/g," ").trim().slice(0,max||120);
+}
+function rxTelefone(v){
+  let d = String(v||"").replace(/\D/g,"");
+  if(d.length>11 && d.startsWith("55")) d = d.slice(2);
+  if(d.length===11) return "("+d.slice(0,2)+") "+d.slice(2,7)+"-"+d.slice(7);
+  if(d.length===10) return "("+d.slice(0,2)+") "+d.slice(2,6)+"-"+d.slice(6);
+  return d;
+}
+function rxHoje(){
+  const h = new Date();
+  return String(h.getDate()).padStart(2,"0")+"/"+String(h.getMonth()+1).padStart(2,"0")+"/"+h.getFullYear();
+}
+
+// Aplica as linhas da planilha ao CRM. Retorna quantos cartões criou e atualizou.
+function aplicarLeadsRaioX(linhas){
+  if(!S.raioxImportados) S.raioxImportados = [];
+  let novos = 0, atualizados = 0;
+  (linhas||[]).forEach((r,i)=>{
+    const chave = rxLimpo(r.at,40)+"|"+String(r.whatsapp||"").replace(/\D/g,"");
+    const empresa = rxLimpo(r.business);
+    if(!empresa || S.raioxImportados.includes(chave)) return;
+    S.raioxImportados.push(chave);
+
+    const nota = parseInt(r.score,10);
+    const notaTxt = isNaN(nota) ? "" : " (nota "+nota+"/100)";
+    const teste = r.demo ? " [teste em modo demonstração]" : "";
+    const evento = { tipo:"WhatsApp", texto:"Fez o Raio-X do GMN"+notaTxt+teste, data: rxHoje() };
+
+    const existente = verificarDuplicidade(empresa, null);
+    if(existente){
+      existente.historico = existente.historico||[];
+      existente.historico.push(evento);
+      atualizados++;
+      return;
+    }
+    const agora = new Date().toISOString();
+    S.leads.push({
+      id: "l_rx_"+Date.now()+"_"+i, etapa:"captacao", nome: empresa, nicho:"", cidade:"",
+      origem:"Raio-X", responsavel:"", contatoNome: rxLimpo(r.name,80), telefone: rxTelefone(r.whatsapp),
+      instagram:"", valor:0, followup: rxHoje(),
+      nota: ("Raio-X do GMN"+notaTxt+teste+". "+rxLimpo(r.address,160)).trim(),
+      motivoPerda:"", historico:[evento], anexos:[], reaberturas:[],
+      criadoEm: agora, entrouNaEtapaEm: agora
+    });
+    novos++;
+  });
+  return { novos, atualizados };
+}
+
+async function importarRaioX(){
+  let url = null;
+  try{ url = localStorage.getItem(RX_URL_KEY); }catch(e){}
+  if(!url){
+    url = (prompt("Cole o endereço da planilha de leads do Raio-X (o link do Apps Script, com o token):")||"").trim();
+    if(!url) return;
+    if(!/^https:\/\//.test(url)){ showToast("⚠ O endereço precisa começar com https://"); return; }
+    try{ localStorage.setItem(RX_URL_KEY, url); }catch(e){}
+  }
+  const btn = document.getElementById("btnRaioX");
+  btn.disabled = true; btn.textContent = "Importando…";
+  try{
+    const res = await fetch(url);
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const dados = await res.json();
+    if(!dados || !Array.isArray(dados.leads)) throw new Error(dados && dados.error ? dados.error : "resposta inesperada");
+    const { novos, atualizados } = aplicarLeadsRaioX(dados.leads);
+    if(novos || atualizados){
+      autoSave(); render();
+      showToast("✓ Raio-X: "+novos+" lead(s) novo(s)"+(atualizados ? ", "+atualizados+" atualizado(s)" : ""));
+    } else {
+      showToast("Nenhum lead novo do Raio-X.");
+    }
+  }catch(e){
+    if(confirm("Não consegui ler a planilha do Raio-X ("+e.message+").\n\nQuer trocar o endereço cadastrado?")){
+      try{ localStorage.removeItem(RX_URL_KEY); }catch(_){}
+    }
+  }finally{
+    btn.disabled = false; btn.textContent = "⬇ Raio-X";
+  }
+}
+
 function exportHTML(){
   let h = document.documentElement.outerHTML;
   h = h.replace(/<script>window\.__SK__=\{.*?\};<\/script>/gs, "");
